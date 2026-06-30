@@ -306,7 +306,7 @@ def _activate_shop(user):
     st.session_state["uid"] = user["id"]
     st.session_state["username"] = user["username"]
     st.session_state["shop_name"] = user.get("shop_name") or user["username"]
-    db.set_active_db(db.shop_db_path(user["id"]))
+    db.set_shop(user["id"])
     db.init_db()
 
 
@@ -361,8 +361,8 @@ def _render_login():
 def _auth_gate():
     """Block the whole app until a valid session exists."""
     if "uid" in st.session_state:
-        # Keep the active DB pinned across reruns within this session.
-        db.set_active_db(db.shop_db_path(st.session_state["uid"]))
+        # Keep this session scoped to its shop across reruns.
+        db.set_shop(st.session_state["uid"])
         return
     token = st.query_params.get("s")
     user = auth.resolve_session(token)

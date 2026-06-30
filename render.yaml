@@ -12,9 +12,12 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.4"
-      # Where each shop's database lives. On Render's FREE plan the disk is
-      # ephemeral (wiped on redeploy/restart) — fine for a pilot. For real
-      # shopkeepers, upgrade to a paid plan and attach a persistent disk, then
-      # set this to its mount path (e.g. /var/data) so data survives restarts.
-      - key: STOCKSENSE_DATA_DIR
-        value: /tmp/stocksense_data
+      # Persist data in a free hosted Turso (libSQL) database so nothing is
+      # lost when the free host restarts. Create a DB at turso.tech (no card),
+      # then set these two in the Render dashboard (Environment tab). Leave
+      # them blank and the app falls back to a local file (demo only — wiped
+      # on restart).
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
