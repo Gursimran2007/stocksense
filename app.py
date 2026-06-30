@@ -324,6 +324,73 @@ def page_dashboard(report):
         f"&nbsp; {_dot(DOT['low'])} fine for now (see Restocking)</div>",
         unsafe_allow_html=True)
 
+    _ai_analysis_panel(report)
+
+
+def _ai_analysis_panel(report):
+    """Shop-level read from the neural forecaster: trend, momentum, weekday shape."""
+    ai_rows = [r for r in report if (r["forecast"].get("ai_analysis"))]
+    if not ai_rows:
+        return
+    st.subheader("AI sales analysis")
+    st.caption("A small neural net, trained on your whole shop's history, "
+               "reads the trend, weekly rhythm and recent momentum behind every item.")
+
+    rising = sorted((r for r in ai_rows
+                     if r["forecast"]["ai_analysis"]["trend_dir"] == "rising"),
+                    key=lambda r: -r["forecast"]["ai_analysis"]["trend_pct_month"])
+    falling = sorted((r for r in ai_rows
+                      if r["forecast"]["ai_analysis"]["trend_dir"] == "falling"),
+                     key=lambda r: r["forecast"]["ai_analysis"]["trend_pct_month"])
+
+    c = st.columns(2)
+    with c[0]:
+        st.markdown("**Picking up speed**")
+        if rising:
+            for r in rising[:4]:
+                a = r["forecast"]["ai_analysis"]
+                st.markdown(f"{_dot(DOT['low'])} **{r['name'] or r['sku']}** "
+                            f"&nbsp;+{a['trend_pct_month']:.0f}%/mo",
+                            unsafe_allow_html=True)
+        else:
+            st.caption("Nothing trending up right now.")
+    with c[1]:
+        st.markdown("**Slowing down**")
+        if falling:
+            for r in falling[:4]:
+                a = r["forecast"]["ai_analysis"]
+                st.markdown(f"{_dot(DOT['high'])} **{r['name'] or r['sku']}** "
+                            f"&nbsp;{a['trend_pct_month']:.0f}%/mo",
+                            unsafe_allow_html=True)
+        else:
+            st.caption("Nothing fading right now.")
+
+    # shop-wide weekly rhythm (average the per-item weekday shapes)
+    import numpy as _np
+    dows = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    stacked = _np.array([[r["forecast"]["ai_analysis"]["weekly_shape"][d]
+                          for d in dows] for r in ai_rows])
+    shop_week = stacked.sum(axis=0)
+    busiest = dows[int(shop_week.argmax())]
+    st.markdown(f"**Busiest day across the shop: {busiest}** — "
+                "stock up the day before.")
+    import altair as alt
+    wk_df = pd.DataFrame({"Day": dows, "Predicted units": shop_week})
+    chart = (alt.Chart(wk_df).mark_bar(color="#33503F")
+             .encode(x=alt.X("Day:N", sort=dows, title=None),
+                     y=alt.Y("Predicted units:Q", title=None))
+             .properties(height=220))
+    st.altair_chart(chart, use_container_width=True)
+
+    with st.expander("Per-item AI read"):
+        st.dataframe(pd.DataFrame([{
+            "Item": r["name"] or r["sku"],
+            "AI forecast/day": r["forecast"]["daily_rate"],
+            "Trend/mo": f"{r['forecast']['ai_analysis']['trend_pct_month']:+.0f}%",
+            "Last-week momentum": f"{r['forecast']['ai_analysis']['momentum_pct']:+.0f}%",
+            "Busiest day": r["forecast"]["ai_analysis"]["busiest_day"],
+        } for r in ai_rows]), use_container_width=True, hide_index=True)
+
 
 # ============================================================ PAGE: RECORD SALES
 def page_sell(report):
