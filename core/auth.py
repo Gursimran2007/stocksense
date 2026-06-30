@@ -16,16 +16,16 @@ Design choices (all driven by "a shopkeeper will actually use this"):
 The auth DB is a single shared file (auth.db); each shop's *business* data
 lives in its own isolated file (see db.shop_db_path).
 """
-import os
-import sqlite3
 import hashlib
 import secrets
-from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 from . import db as _db
 
-AUTH_DB = _db.DATA_DIR / "auth.db"
+# Auth tables live in the SAME database as the shop data (local file or, in
+# production, the hosted Turso DB) so accounts persist wherever the data does.
+# They are global, not shop-scoped, so they carry no shop_id.
+_conn = _db.conn
 
 _PBKDF_ROUNDS = 200_000
 _SESSION_DAYS = 30
@@ -46,19 +46,6 @@ CREATE TABLE IF NOT EXISTS sessions(
   expires_at TEXT NOT NULL
 );
 """
-
-
-@contextmanager
-def _conn():
-    c = sqlite3.connect(AUTH_DB, timeout=30)
-    c.row_factory = sqlite3.Row
-    c.execute("PRAGMA journal_mode=WAL")
-    c.execute("PRAGMA busy_timeout=30000")
-    try:
-        yield c
-        c.commit()
-    finally:
-        c.close()
 
 
 def init():
@@ -92,15 +79,16 @@ def signup(username, password, shop_name=""):
     salt = secrets.token_hex(16)
     pw_hash = _hash(password, salt)
     now = datetime.now().isoformat()
-    try:
-        with _conn() as c:
-            cur = c.execute(
-                """INSERT INTO users(username,shop_name,salt,pw_hash,created_at)
-                   VALUES(?,?,?,?,?)""",
-                (username, shop_name.strip(), salt, pw_hash, now))
-            return cur.lastrowid
-    except sqlite3.IntegrityError:
-        raise AuthError("That username is already taken. Try logging in instead.")
+    with _conn() as c:
+        # Pre-check keeps the duplicate message backend-agnostic (the UNIQUE
+        # constraint differs in how sqlite3 vs libSQL surface the error).
+        if c.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
+            raise AuthError("That username is already taken. Try logging in instead.")
+        cur = c.execute(
+            """INSERT INTO users(username,shop_name,salt,pw_hash,created_at)
+               VALUES(?,?,?,?,?)""",
+            (username, shop_name.strip(), salt, pw_hash, now))
+        return cur.lastrowid
 
 
 def login(username, password):
