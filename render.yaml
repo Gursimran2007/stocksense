@@ -1,0 +1,20 @@
+# Render blueprint — deploy StockSense on a host that allows a free custom
+# domain (Streamlit Community Cloud does not). Push this repo, then on
+# render.com: New > Blueprint > pick this repo. Add your domain under
+# Settings > Custom Domains and point its DNS as Render instructs.
+services:
+  - type: web
+    name: stocksense
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.4"
+      # Where each shop's database lives. On Render's FREE plan the disk is
+      # ephemeral (wiped on redeploy/restart) — fine for a pilot. For real
+      # shopkeepers, upgrade to a paid plan and attach a persistent disk, then
+      # set this to its mount path (e.g. /var/data) so data survives restarts.
+      - key: STOCKSENSE_DATA_DIR
+        value: /tmp/stocksense_data

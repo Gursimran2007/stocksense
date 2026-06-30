@@ -43,3 +43,48 @@ persistent disk:
 
 Until a persistent `STOCKSENSE_DATA_DIR` is configured, treat a Community Cloud
 deployment as a demo, not a system of record.
+
+---
+
+## Giving shopkeepers a real domain (not `*.streamlit.app`)
+
+A `*.streamlit.app` URL looks like a dev demo. Streamlit Community Cloud
+**cannot** use a custom domain (not even on a paid plan). To hand out something
+like `stocksense.in`, deploy on **Render** instead — it allows custom domains
+for free — and point a cheap domain at it.
+
+### 1. Buy a cheap domain (you do this — needs a card)
+
+| Where | Typical price (India) |
+|-------|-----------------------|
+| Cloudflare Registrar | `.in` ~₹700/yr (at cost, no markup) |
+| Hostinger / GoDaddy | `.in` ~₹500–700/yr; `.shop`/`.store`/`.xyz` often ₹99–199 first year |
+
+Pick something short the shopkeeper can say out loud.
+
+### 2. Deploy on Render (free)
+
+1. Push this repo to GitHub.
+2. https://render.com → sign up free → **New → Blueprint** → pick this repo.
+   It reads `render.yaml` automatically. Click **Apply**.
+3. You get `https://stocksense.onrender.com` once it builds.
+
+### 3. Attach your domain (free on Render)
+
+1. Render dashboard → your service → **Settings → Custom Domains → Add**.
+2. Type your domain (e.g. `stocksense.in`).
+3. Render shows a DNS record (a CNAME, or an A record for the bare domain).
+   Add it in your domain registrar's DNS panel. HTTPS is issued automatically.
+
+Now shopkeepers open `https://stocksense.in` — no "streamlit" anywhere.
+
+### Cost summary
+
+- Domain: ~₹99–700/yr (the only required cost)
+- Hosting: free on Render's free plan (sleeps when idle; **ephemeral disk**)
+- For real shops that can't lose data: Render paid plan + persistent disk,
+  then set `STOCKSENSE_DATA_DIR` to the disk mount path in `render.yaml`.
+
+> Note: I (Claude) can prepare all the files and config, but **buying the
+> domain and editing its DNS must be done by you** — those need your account
+> and payment. Everything else above is already wired up in this repo.
