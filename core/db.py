@@ -30,12 +30,30 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "stocksense.db"          # single local DB file
 
 # Hosted libSQL (Turso). Presence of the URL flips the backend.
-TURSO_URL = os.environ.get("TURSO_DATABASE_URL")
-TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
+# Resolved lazily and from BOTH sources because hosts differ: Render exposes
+# config as env vars, while Streamlit Community Cloud exposes it via st.secrets
+# (not os.environ). Checking both means the same code just works on either.
+def _cfg(key):
+    val = os.environ.get(key)
+    if val:
+        return val
+    try:
+        import streamlit as st
+        return st.secrets.get(key)
+    except Exception:
+        return None
+
+
+def turso_url():
+    return _cfg("TURSO_DATABASE_URL")
+
+
+def turso_token():
+    return _cfg("TURSO_AUTH_TOKEN")
 
 
 def using_turso():
-    return bool(TURSO_URL)
+    return bool(turso_url())
 
 
 # The shop whose data the current request is allowed to touch. 0 = the
@@ -151,8 +169,9 @@ class _LibsqlConn:
 def conn(db_path=None):
     if using_turso():
         import libsql_experimental as libsql
-        kwargs = {"auth_token": TURSO_TOKEN} if TURSO_TOKEN else {}
-        c = _LibsqlConn(libsql.connect(TURSO_URL, **kwargs))
+        token = turso_token()
+        kwargs = {"auth_token": token} if token else {}
+        c = _LibsqlConn(libsql.connect(turso_url(), **kwargs))
         try:
             yield c
             c.commit()
