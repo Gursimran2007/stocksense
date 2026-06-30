@@ -33,12 +33,15 @@ def _series(base, pattern, days=120):
     out = []
     for i in range(days):
         d = START + timedelta(days=i)
+        # Kirana footfall lifts on weekends (Sat=5, Sun=6) — gives the AI
+        # forecaster a real weekly pattern to learn.
+        wk = 1.45 if d.weekday() >= 5 else (0.85 if d.weekday() == 0 else 1.0)
         if pattern == "regular":
-            q = max(0, round(random.gauss(base, base * 0.25)))
+            q = max(0, round(random.gauss(base, base * 0.25) * wk))
         elif pattern == "trend_up":
-            q = max(0, round(random.gauss(base + i * 0.08, base * 0.25)))
+            q = max(0, round(random.gauss(base + i * 0.08, base * 0.25) * wk))
         elif pattern == "trend_down":
-            q = max(0, round(random.gauss(base - i * 0.05, base * 0.3)))
+            q = max(0, round(random.gauss(base - i * 0.05, base * 0.3) * wk))
         elif pattern == "lumpy":
             q = round(random.gauss(base * 8, base * 3)) if random.random() < 0.12 else 0
             q = max(0, q)

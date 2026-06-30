@@ -2,7 +2,8 @@
 Thin layer the UI calls so all business logic stays out of the frontend.
 """
 from . import db
-from .forecast import forecast_sku, _linreg_slope, _to_daily_series
+from .forecast import _linreg_slope, _to_daily_series
+from .ai_forecast import AIForecaster
 from .reorder import reorder_for_sku
 from .cashflow import ReorderLine, optimize, crisis_guard
 from .outcomes import accuracy_summary
@@ -22,10 +23,15 @@ def build_report(service_level=0.95, horizon_days=30,
     psup = db.get_product_supplier_map(db_path)   # sku -> named supplier
     acc = accuracy_summary(db_path)
 
+    # Train the AI forecaster once on the whole shop (cross-SKU pooling),
+    # then ask it per SKU below. Cold-start SKUs fall back internally.
+    sales_by_sku = {sku: db.sales_for(sku, db_path) for sku in products}
+    ai = AIForecaster(horizon_days=horizon_days).fit(sales_by_sku)
+
     rows = []
     for sku, p in products.items():
-        sales = db.sales_for(sku, db_path)
-        fc = forecast_sku(sales, horizon_days)
+        sales = sales_by_sku[sku]
+        fc = ai.forecast_sku(sku, horizon_days)
         on_hand = float(inv.get(sku, {}).get("on_hand", 0) or 0)
         s = sup.get(sku, {})
         ro = reorder_for_sku(
