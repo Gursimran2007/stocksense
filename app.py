@@ -31,8 +31,35 @@ def inject_css():
       }
       html, body, [class*="css"] { font-family:'Inter',sans-serif; color:var(--text); }
       .stApp { background:var(--bg); }
-      header[data-testid="stHeader"]{ background:transparent; height:0; }
+      header[data-testid="stHeader"]{ background:transparent; }
       [data-testid="stToolbar"]{ display:none; }
+      /* Default Streamlit slides the collapsed sidebar fully off-screen,
+         taking its only re-open arrow with it -> no way to reopen. Instead
+         keep a thin on-screen rail (no translate) that holds just the toggle
+         button, and hide the rest of the sidebar's content. */
+      [data-testid="stSidebar"][aria-expanded="false"]{
+        transform:none !important;
+        width:46px !important; min-width:46px !important;
+        overflow:hidden !important;
+        background:var(--surface); border-right:1px solid var(--border);
+      }
+      [data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarUserContent"]{
+        display:none !important;
+      }
+      [data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarHeader"]{
+        width:46px !important; padding:8px 0 !important;
+        justify-content:center !important; overflow:visible !important;
+      }
+      [data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarCollapseButton"]{
+        transform:none !important; z-index:1000;
+        visibility:visible !important; opacity:1 !important;
+      }
+      [data-testid="stSidebar"][aria-expanded="false"] [data-testid="stSidebarCollapseButton"] button{
+        visibility:visible !important; opacity:1 !important;
+        color:var(--accent); background:var(--surface);
+        border:1px solid var(--border); border-radius:8px;
+        box-shadow:0 1px 3px rgba(0,0,0,.08);
+      }
       .block-container { padding-top:2.4rem; max-width:1200px; }
       h1,h2,h3,h4 { letter-spacing:-.015em; font-weight:600; }
 
@@ -203,6 +230,17 @@ DOT = {"high": "#B4543A", "medium": "#C8A04B", "low": "#5C7A5E"}
 
 def _dot(color):
     return f"<span style='color:{color};font-size:1.05em'>&#9679;</span>"
+
+
+def _sku_from_name(name, taken):
+    """Make a tidy unique SKU from a product name (e.g. 'Basmati Rice' -> RICE)."""
+    import re
+    base = re.sub(r"[^A-Za-z0-9]+", "-", (name or "").strip().upper()).strip("-")
+    base = base[:14] or "ITEM"
+    sku, i = base, 2
+    while sku in taken:
+        sku = f"{base}-{i}"; i += 1
+    return sku
 
 
 def _match_sku(text, products):
@@ -705,14 +743,34 @@ def page_suppliers():
         picked = st.multiselect(
             "Which items do you buy from this supplier?",
             list(label_sku.keys()),
-            help="These items' reorders will go to this supplier. You can "
-                 "change it any time below.") if products else []
+            help="Pick items already in your shop. Reorders for these go to "
+                 "this supplier. You can change it any time below.") \
+            if products else []
+        new_names = st.text_input(
+            "Add new product name(s) for this supplier",
+            placeholder="e.g. Basmati Rice 5kg, Sunflower Oil 1L",
+            help="Type product names (comma-separated) this supplier provides. "
+                 "We'll create them and link them to this supplier.")
         if st.form_submit_button("Add supplier", type="primary") and nm:
             sid = db.add_supplier(nm, ph, lt, rel)
             for lbl in picked:
                 db.assign_product_supplier(label_sku[lbl], sid)
+            # create any typed-in products, then link them to this supplier
+            taken = {p["sku"] for p in products}
+            created = 0
+            for raw in new_names.split(","):
+                pname = raw.strip()
+                if not pname:
+                    continue
+                new_sku = _sku_from_name(pname, taken)
+                taken.add(new_sku)
+                db.upsert_products([{"sku": new_sku, "name": pname,
+                                     "unit_cost": 0}])
+                db.assign_product_supplier(new_sku, sid)
+                created += 1
+            linked = len(picked) + created
             st.success(f"Added {nm}"
-                       + (f" · linked {len(picked)} item(s)" if picked else ""))
+                       + (f" · linked {linked} item(s)" if linked else ""))
             st.rerun()
 
     # ---- assign one supplier per product ----
