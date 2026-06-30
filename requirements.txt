@@ -2,4 +2,5 @@ streamlit>=1.30
 pandas>=2.0
 numpy>=1.24
 openpyxl>=3.1
-libsql-experimental>=0.0.40   # hosted Turso DB so data survives restarts
+# Turso (hosted DB) is reached over HTTP using only the Python standard
+# library — no extra package needed, so nothing can fail to build on a host.

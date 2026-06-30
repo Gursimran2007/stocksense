@@ -113,54 +113,127 @@ CREATE INDEX IF NOT EXISTS idx_sales_shop_sku ON sales(shop_id, sku);
 """
 
 
-# ---- libSQL adapter ------------------------------------------------------
-# The libsql client returns plain tuples and has no row_factory. These thin
-# wrappers give it the same dict-row, cursor and commit surface our code (and
-# sqlite3.Row) already relies on, so the rest of the module is backend-blind.
-class _DictCursor:
-    def __init__(self, cur):
-        self._cur = cur
-        self._cols = [d[0] for d in cur.description] if cur.description else []
+# ---- Turso HTTP adapter --------------------------------------------------
+# We talk to Turso over its HTTP "pipeline" API using only the standard library
+# (urllib + json). No compiled/native package, so nothing can fail to build on
+# a free host — it installs and runs anywhere Python does. These wrappers give
+# the HTTP transport the same dict-row / cursor / commit surface our code (and
+# sqlite3.Row) relies on, so the rest of the module is backend-blind.
+import json as _json
+import urllib.request as _urlreq
 
-    @property
-    def lastrowid(self):
-        return self._cur.lastrowid
 
-    def _wrap(self, row):
-        return dict(zip(self._cols, row)) if row is not None else None
+def _arg(v):
+    """Python value -> Hrana typed argument."""
+    if v is None:
+        return {"type": "null"}
+    if isinstance(v, bool):
+        return {"type": "integer", "value": str(int(v))}
+    if isinstance(v, int):
+        return {"type": "integer", "value": str(v)}
+    if isinstance(v, float):
+        return {"type": "float", "value": v}
+    return {"type": "text", "value": str(v)}
+
+
+def _decode(cell):
+    """Hrana typed cell -> Python value."""
+    t = cell.get("type")
+    val = cell.get("value")
+    if t == "null":
+        return None
+    if t == "integer":
+        return int(val)
+    if t == "float":
+        return float(val)
+    return val
+
+
+class _HttpCursor:
+    def __init__(self, result):
+        self._cols = [c["name"] for c in (result or {}).get("cols", [])]
+        self._rows = [{self._cols[i]: _decode(c) for i, c in enumerate(r)}
+                      for r in (result or {}).get("rows", [])]
+        lri = (result or {}).get("last_insert_rowid")
+        self.lastrowid = int(lri) if lri is not None else None
+        self._i = 0
 
     def fetchone(self):
-        return self._wrap(self._cur.fetchone())
+        if self._i < len(self._rows):
+            row = self._rows[self._i]; self._i += 1
+            return row
+        return None
 
     def fetchall(self):
-        return [self._wrap(r) for r in self._cur.fetchall()]
+        rows = self._rows[self._i:]; self._i = len(self._rows)
+        return rows
 
     def __iter__(self):
         return iter(self.fetchall())
 
 
-class _LibsqlConn:
-    def __init__(self, raw):
-        self._raw = raw
+class _HttpConn:
+    """Stateful libSQL connection over HTTP. The server keeps the connection
+    alive via a 'baton' returned on each call; we pass it back so all calls in
+    one `with` block share a connection, then send `close` to release it.
+    Statements outside an explicit transaction autocommit, so writes persist
+    immediately (same effective behaviour as our sqlite path)."""
+
+    def __init__(self, base, token):
+        self._url = base.replace("libsql://", "https://").rstrip("/") + "/v2/pipeline"
+        self._token = token
+        self._baton = None
+
+    def _pipeline(self, requests):
+        body = {"requests": requests}
+        if self._baton:
+            body["baton"] = self._baton
+        data = _json.dumps(body).encode()
+        headers = {"Content-Type": "application/json"}
+        if self._token:
+            headers["Authorization"] = "Bearer " + self._token
+        req = _urlreq.Request(self._url, data=data, headers=headers)
+        with _urlreq.urlopen(req, timeout=30) as resp:
+            out = _json.load(resp)
+        self._baton = out.get("baton")
+        results = []
+        for item in out.get("results", []):
+            if item.get("type") == "error":
+                raise RuntimeError("Turso: " +
+                                   item.get("error", {}).get("message", "unknown error"))
+            results.append(item.get("response", {}))
+        return results
+
+    @staticmethod
+    def _stmt(sql, params=None):
+        s = {"sql": sql}
+        if params:
+            s["args"] = [_arg(p) for p in params]
+        return {"type": "execute", "stmt": s}
 
     def execute(self, sql, params=None):
-        cur = self._raw.execute(sql, params) if params else self._raw.execute(sql)
-        return _DictCursor(cur)
+        res = self._pipeline([self._stmt(sql, params)])
+        return _HttpCursor(res[0].get("result") if res else None)
 
     def executemany(self, sql, seq):
-        self._raw.executemany(sql, list(seq))
+        seq = list(seq)
+        # chunk so a huge seed (hundreds of rows) stays within request limits
+        for i in range(0, len(seq), 200):
+            self._pipeline([self._stmt(sql, p) for p in seq[i:i + 200]])
         return self
 
     def executescript(self, sql):
-        self._raw.executescript(sql)
+        stmts = [s.strip() for s in sql.split(";") if s.strip()]
+        if stmts:
+            self._pipeline([self._stmt(s) for s in stmts])
         return self
 
     def commit(self):
-        self._raw.commit()
+        pass            # statements autocommit on the server
 
     def close(self):
         try:
-            self._raw.close()
+            self._pipeline([{"type": "close"}])
         except Exception:
             pass
 
@@ -168,10 +241,7 @@ class _LibsqlConn:
 @contextmanager
 def conn(db_path=None):
     if using_turso():
-        import libsql_experimental as libsql
-        token = turso_token()
-        kwargs = {"auth_token": token} if token else {}
-        c = _LibsqlConn(libsql.connect(turso_url(), **kwargs))
+        c = _HttpConn(turso_url(), turso_token())
         try:
             yield c
             c.commit()
