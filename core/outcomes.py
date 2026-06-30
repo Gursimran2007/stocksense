@@ -9,7 +9,7 @@ from . import db
 
 def record_period(sku, date, forecast_qty, actual_qty,
                   stockout=False, spoilage=0.0, lead_time_actual=None,
-                  db_path=db.DB_PATH):
+                  db_path=None):
     db.log_outcomes([{
         "sku": sku, "date": date,
         "forecast_qty": forecast_qty, "actual_qty": actual_qty,
@@ -18,7 +18,7 @@ def record_period(sku, date, forecast_qty, actual_qty,
     }], db_path)
 
 
-def accuracy_summary(db_path=db.DB_PATH):
+def accuracy_summary(db_path=None):
     """Aggregate MAPE-like accuracy per SKU for the dashboard."""
     rows = db.get_outcomes(db_path)
     by = {}
