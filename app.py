@@ -11,13 +11,14 @@ import pandas as pd
 import streamlit as st
 
 from core import db
+from core import auth
 from core.adapters import TabularAdapter, ManualAdapter
 from core.seed import seed_db, write_messy_excel
 from core.engine import build_report, cash_view
 from core.sourcing import whatsapp_link, marketplace_links, tel_link
 
 st.set_page_config(page_title="StockSense", page_icon="S", layout="wide")
-db.init_db()
+auth.init()
 
 
 def inject_css():
@@ -299,8 +300,89 @@ def _bill_text(lines, total, shop_name=""):
     return "\n".join(out)
 
 
+# ============================================================ AUTH GATE
+def _activate_shop(user):
+    """Point this session at the logged-in shop's own isolated DB."""
+    st.session_state["uid"] = user["id"]
+    st.session_state["username"] = user["username"]
+    st.session_state["shop_name"] = user.get("shop_name") or user["username"]
+    db.set_active_db(db.shop_db_path(user["id"]))
+    db.init_db()
+
+
+def _render_login():
+    st.markdown(
+        "<div class='appbar'><div class='logo'>S</div>"
+        "<div><div class='brand-name'>StockSense</div>"
+        "<div class='brand-sub'>Sign in to your shop</div></div></div>",
+        unsafe_allow_html=True)
+    tab_login, tab_signup = st.tabs(["Log in", "Create shop account"])
+
+    with tab_login:
+        with st.form("login_form"):
+            u = st.text_input("Username (your phone number works)")
+            p = st.text_input("Password", type="password")
+            ok = st.form_submit_button("Log in", use_container_width=True)
+        if ok:
+            try:
+                user = auth.login(u, p)
+            except auth.AuthError as e:
+                st.error(str(e))
+            else:
+                token = auth.create_session(user["id"])
+                st.query_params["s"] = token
+                _activate_shop(user)
+                st.rerun()
+
+    with tab_signup:
+        with st.form("signup_form"):
+            shop = st.text_input("Shop name", placeholder="e.g. Sharma Kirana Store")
+            u2 = st.text_input("Choose a username (phone number is fine)")
+            p2 = st.text_input("Choose a password (6+ characters)", type="password")
+            p3 = st.text_input("Repeat password", type="password")
+            ok2 = st.form_submit_button("Create account", use_container_width=True)
+        if ok2:
+            if p2 != p3:
+                st.error("The two passwords don't match.")
+            else:
+                try:
+                    uid = auth.signup(u2, p2, shop)
+                except auth.AuthError as e:
+                    st.error(str(e))
+                else:
+                    user = {"id": uid, "username": auth._norm(u2),
+                            "shop_name": shop.strip()}
+                    token = auth.create_session(uid)
+                    st.query_params["s"] = token
+                    _activate_shop(user)
+                    st.rerun()
+
+
+def _auth_gate():
+    """Block the whole app until a valid session exists."""
+    if "uid" in st.session_state:
+        # Keep the active DB pinned across reruns within this session.
+        db.set_active_db(db.shop_db_path(st.session_state["uid"]))
+        return
+    token = st.query_params.get("s")
+    user = auth.resolve_session(token)
+    if user:
+        _activate_shop(user)
+        return
+    _render_login()
+    st.stop()
+
+
+_auth_gate()
+
+
 # ============================================================ SIDEBAR (only nav)
 with st.sidebar:
+    st.markdown(
+        f"<div class='nav-head'>Shop</div>"
+        f"<div style='font-weight:600;margin-bottom:.5rem'>"
+        f"{st.session_state.get('shop_name','')}</div>",
+        unsafe_allow_html=True)
     lang_name = st.selectbox("Language", list(LANGS.keys()))
     LANG = LANGS[lang_name]
     st.divider()
@@ -311,8 +393,41 @@ with st.sidebar:
     st.divider()
     if st.button("Load demo shop", use_container_width=True):
         seed_db(); st.session_state.pop("imported_file", None); st.rerun()
-    if st.button("Start over", use_container_width=True):
-        db.reset_db(); st.session_state.pop("imported_file", None); st.rerun()
+
+    # Start over is destructive -> require a second, explicit confirm so a
+    # shopkeeper can't wipe a year of real data with one stray tap.
+    if st.session_state.get("confirm_reset"):
+        st.warning("This deletes ALL your products, sales and stock. Sure?")
+        cc = st.columns(2)
+        if cc[0].button("Yes, erase", use_container_width=True):
+            db.reset_db()
+            st.session_state.pop("imported_file", None)
+            st.session_state.pop("confirm_reset", None)
+            st.rerun()
+        if cc[1].button("Cancel", use_container_width=True):
+            st.session_state.pop("confirm_reset", None); st.rerun()
+    else:
+        if st.button("Start over", use_container_width=True):
+            st.session_state["confirm_reset"] = True; st.rerun()
+
+    st.divider()
+    with st.expander("Account"):
+        st.caption(f"Signed in as **{st.session_state.get('username','')}**")
+        with st.form("change_pw"):
+            op = st.text_input("Current password", type="password")
+            np_ = st.text_input("New password (6+ chars)", type="password")
+            if st.form_submit_button("Change password"):
+                try:
+                    auth.change_password(st.session_state["uid"], op, np_)
+                    st.success("Password changed.")
+                except auth.AuthError as e:
+                    st.error(str(e))
+        if st.button("Log out", use_container_width=True):
+            auth.destroy_session(st.query_params.get("s"))
+            st.query_params.clear()
+            for k in ("uid", "username", "shop_name"):
+                st.session_state.pop(k, None)
+            st.rerun()
 
 st.markdown(
     "<div class='appbar'><div class='logo'>S</div>"
@@ -510,12 +625,21 @@ def page_sell(report):
     # ---- AUTOMATED PATH: photo of handwritten register -> confirm grid ----
     with st.expander(t("photo_register", LANG), expanded=False):
         st.caption(t("photo_help", LANG))
-        from core.adapters.ocr_handwritten import HandwrittenRegisterOCRAdapter
+        # OCR pulls in heavy/optional deps (opencv, an OCR engine). On a slim
+        # free host they may be absent — degrade gracefully instead of crashing
+        # the whole page so the rest of the app still works.
+        try:
+            from core.adapters.ocr_handwritten import HandwrittenRegisterOCRAdapter
+        except Exception:
+            st.info("Photo reading isn't available on this server yet. "
+                    "Use the manual entry below, or upload an Excel/CSV under "
+                    "**Inventory input**.")
+            HandwrittenRegisterOCRAdapter = None
         src = st.radio("photo source", ["Take photo", "Upload photo"],
                        horizontal=True, label_visibility="collapsed")
         img = (st.camera_input("Register photo") if src == "Take photo"
                else st.file_uploader("Register photo", type=["jpg", "jpeg", "png"]))
-        if img is not None:
+        if img is not None and HandwrittenRegisterOCRAdapter is not None:
             with st.spinner("Reading your register…"):
                 batch = HandwrittenRegisterOCRAdapter().normalize(img.getvalue())
             for w in batch.warnings:

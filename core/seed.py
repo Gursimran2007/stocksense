@@ -54,7 +54,7 @@ def _series(base, pattern, days=120):
     return out
 
 
-def seed_db(db_path=db.DB_PATH):
+def seed_db(db_path=None):
     db.reset_db(db_path)
     products, sales, inv, sup = [], [], [], []
     for sku, name, cost, base, pat, lead, rel, oh in CATALOG:

@@ -1,11 +1,43 @@
-"""SQLite persistence for the normalized schema. No ORM, no heavy deps."""
+"""SQLite persistence for the normalized schema. No ORM, no heavy deps.
+
+Multi-tenant: each shop gets its own DB file under DATA_DIR. The "active" DB
+for the current request is held in a ContextVar so concurrent Streamlit
+sessions never see each other's data. Functions still accept an explicit
+db_path for tests/seeding; when None they resolve to the active DB.
+"""
+import os
 import sqlite3
+import contextvars
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-DB_PATH = Path(__file__).resolve().parent.parent / "inventory.db"
+BASE_DIR = Path(__file__).resolve().parent.parent
+DB_PATH = BASE_DIR / "inventory.db"
+
+# Per-shop DB files live here. Overridable for deployment (e.g. a mounted
+# persistent disk on a host whose default filesystem is ephemeral).
+DATA_DIR = Path(os.environ.get("STOCKSENSE_DATA_DIR", BASE_DIR / "data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# The DB the current session/thread should talk to. Set after login.
+_active_db = contextvars.ContextVar("active_db", default=None)
+
+
+def set_active_db(path):
+    """Point all default-path DB calls at this file for the current context."""
+    _active_db.set(str(path))
+
+
+def active_db():
+    """Resolve the current context's DB, falling back to the single-tenant DB."""
+    return _active_db.get() or DB_PATH
+
+
+def shop_db_path(uid):
+    """Path to a given shop's isolated DB file."""
+    return DATA_DIR / f"shop_{uid}.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products(
@@ -40,9 +72,14 @@ CREATE INDEX IF NOT EXISTS idx_sales_sku ON sales(sku);
 
 
 @contextmanager
-def conn(db_path=DB_PATH):
-    c = sqlite3.connect(db_path)
+def conn(db_path=None):
+    db_path = db_path or active_db()
+    # timeout + WAL + busy_timeout keep concurrent Streamlit reruns from
+    # hitting "database is locked" when two writes race.
+    c = sqlite3.connect(db_path, timeout=30)
     c.row_factory = sqlite3.Row
+    c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA busy_timeout=30000")
     try:
         yield c
         c.commit()
@@ -50,7 +87,7 @@ def conn(db_path=DB_PATH):
         c.close()
 
 
-def init_db(db_path=DB_PATH):
+def init_db(db_path=None):
     with conn(db_path) as c:
         c.executescript(SCHEMA)
         # Migrate older DBs that predate per-product supplier links.
@@ -59,7 +96,7 @@ def init_db(db_path=DB_PATH):
             c.execute("ALTER TABLE suppliers ADD COLUMN supplier_id INTEGER")
 
 
-def reset_db(db_path=DB_PATH):
+def reset_db(db_path=None):
     with conn(db_path) as c:
         for t in ("products", "sales", "inventory", "suppliers", "outcomes",
                   "settings", "supplier_master"):
@@ -68,7 +105,7 @@ def reset_db(db_path=DB_PATH):
 
 
 # ---- upserts -------------------------------------------------------------
-def upsert_products(rows: Iterable[dict], db_path=DB_PATH):
+def upsert_products(rows: Iterable[dict], db_path=None):
     with conn(db_path) as c:
         for r in rows:
             c.execute(
@@ -80,13 +117,13 @@ def upsert_products(rows: Iterable[dict], db_path=DB_PATH):
                 (r["sku"], r.get("name", ""), float(r.get("unit_cost", 0) or 0)))
 
 
-def insert_sales(rows: Iterable[dict], db_path=DB_PATH):
+def insert_sales(rows: Iterable[dict], db_path=None):
     with conn(db_path) as c:
         c.executemany("INSERT INTO sales(sku,date,qty) VALUES(?,?,?)",
                       [(r["sku"], r["date"], float(r.get("qty", 0) or 0)) for r in rows])
 
 
-def record_sale(sku, qty, date=None, db_path=DB_PATH):
+def record_sale(sku, qty, date=None, db_path=None):
     """Log a sale AND auto-decrement on-hand stock (never below 0).
     This is what keeps inventory self-updating — no manual recounting."""
     from datetime import date as _d
@@ -102,7 +139,7 @@ def record_sale(sku, qty, date=None, db_path=DB_PATH):
             (sku, now, float(qty)))
 
 
-def receive_stock(sku, qty, db_path=DB_PATH):
+def receive_stock(sku, qty, db_path=None):
     """Stock arrived from supplier -> auto-increment on-hand."""
     now = datetime.now().isoformat()
     with conn(db_path) as c:
@@ -113,7 +150,7 @@ def receive_stock(sku, qty, db_path=DB_PATH):
             (sku, float(qty), now, float(qty)))
 
 
-def upsert_inventory(rows: Iterable[dict], db_path=DB_PATH):
+def upsert_inventory(rows: Iterable[dict], db_path=None):
     now = datetime.now().isoformat()
     with conn(db_path) as c:
         for r in rows:
@@ -125,7 +162,7 @@ def upsert_inventory(rows: Iterable[dict], db_path=DB_PATH):
                  r.get("updated_at", now)))
 
 
-def upsert_suppliers(rows: Iterable[dict], db_path=DB_PATH):
+def upsert_suppliers(rows: Iterable[dict], db_path=None):
     with conn(db_path) as c:
         for r in rows:
             c.execute(
@@ -138,7 +175,7 @@ def upsert_suppliers(rows: Iterable[dict], db_path=DB_PATH):
 
 
 # ---- named suppliers (master) + per-product assignment -------------------
-def add_supplier(name, phone="", lead_time_days=7, reliability=0.95, db_path=DB_PATH):
+def add_supplier(name, phone="", lead_time_days=7, reliability=0.95, db_path=None):
     """Create a named supplier; returns its new id."""
     with conn(db_path) as c:
         cur = c.execute(
@@ -147,7 +184,7 @@ def add_supplier(name, phone="", lead_time_days=7, reliability=0.95, db_path=DB_
         return cur.lastrowid
 
 
-def update_supplier(sid, name, phone, lead_time_days, reliability, db_path=DB_PATH):
+def update_supplier(sid, name, phone, lead_time_days, reliability, db_path=None):
     with conn(db_path) as c:
         c.execute(
             """UPDATE supplier_master SET name=?,phone=?,lead_time_days=?,reliability=?
@@ -159,18 +196,18 @@ def update_supplier(sid, name, phone, lead_time_days, reliability, db_path=DB_PA
                   (float(lead_time_days or 7), float(reliability or 0.95), sid))
 
 
-def delete_supplier(sid, db_path=DB_PATH):
+def delete_supplier(sid, db_path=None):
     """Remove a supplier; any product pointing at it falls back to defaults."""
     with conn(db_path) as c:
         c.execute("DELETE FROM supplier_master WHERE id=?", (sid,))
         c.execute("UPDATE suppliers SET supplier_id=NULL WHERE supplier_id=?", (sid,))
 
 
-def get_supplier_master(db_path=DB_PATH):
+def get_supplier_master(db_path=None):
     return _all("supplier_master", db_path)
 
 
-def assign_product_supplier(sku, supplier_id, db_path=DB_PATH):
+def assign_product_supplier(sku, supplier_id, db_path=None):
     """Attach a product to a named supplier (or None to clear). Reorder math for
     that product then uses the supplier's lead-time/reliability until changed."""
     with conn(db_path) as c:
@@ -190,7 +227,7 @@ def assign_product_supplier(sku, supplier_id, db_path=DB_PATH):
             (sku, float(lt), float(rel), supplier_id))
 
 
-def get_product_supplier_map(db_path=DB_PATH):
+def get_product_supplier_map(db_path=None):
     """sku -> assigned supplier dict {id,name,phone,lead_time_days,reliability}."""
     with conn(db_path) as c:
         rows = c.execute(
@@ -199,7 +236,7 @@ def get_product_supplier_map(db_path=DB_PATH):
     return {r["sku"]: dict(r) for r in rows}
 
 
-def log_outcomes(rows: Iterable[dict], db_path=DB_PATH):
+def log_outcomes(rows: Iterable[dict], db_path=None):
     with conn(db_path) as c:
         c.executemany(
             """INSERT INTO outcomes(sku,date,forecast_qty,actual_qty,stockout,spoilage,lead_time_actual)
@@ -210,37 +247,37 @@ def log_outcomes(rows: Iterable[dict], db_path=DB_PATH):
 
 
 # ---- reads ---------------------------------------------------------------
-def _all(table, db_path=DB_PATH):
+def _all(table, db_path=None):
     with conn(db_path) as c:
         return [dict(x) for x in c.execute(f"SELECT * FROM {table}")]
 
 
-def set_setting(key, value, db_path=DB_PATH):
+def set_setting(key, value, db_path=None):
     with conn(db_path) as c:
         c.execute("""INSERT INTO settings(key,value) VALUES(?,?)
                      ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
                   (key, str(value)))
 
 
-def get_setting(key, default=None, db_path=DB_PATH):
+def get_setting(key, default=None, db_path=None):
     with conn(db_path) as c:
         row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
     return row["value"] if row else default
 
 
-def get_products(db_path=DB_PATH):  return _all("products", db_path)
-def get_inventory(db_path=DB_PATH): return _all("inventory", db_path)
-def get_suppliers(db_path=DB_PATH): return _all("suppliers", db_path)
-def get_outcomes(db_path=DB_PATH):  return _all("outcomes", db_path)
+def get_products(db_path=None):  return _all("products", db_path)
+def get_inventory(db_path=None): return _all("inventory", db_path)
+def get_suppliers(db_path=None): return _all("suppliers", db_path)
+def get_outcomes(db_path=None):  return _all("outcomes", db_path)
 
 
-def get_sales(db_path=DB_PATH):
+def get_sales(db_path=None):
     with conn(db_path) as c:
         return [dict(x) for x in
                 c.execute("SELECT sku,date,qty FROM sales ORDER BY date")]
 
 
-def sales_for(sku, db_path=DB_PATH):
+def sales_for(sku, db_path=None):
     with conn(db_path) as c:
         return [dict(x) for x in c.execute(
             "SELECT date,qty FROM sales WHERE sku=? ORDER BY date", (sku,))]

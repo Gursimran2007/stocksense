@@ -15,7 +15,7 @@ def _trend(sales_rows):
 
 
 def build_report(service_level=0.95, horizon_days=30,
-                 critical_skus=None, db_path=db.DB_PATH):
+                 critical_skus=None, db_path=None):
     critical_skus = set(critical_skus or [])
     products = {p["sku"]: p for p in db.get_products(db_path)}
     inv = {i["sku"]: i for i in db.get_inventory(db_path)}
