@@ -7,3 +7,10 @@ font = "sans serif"
 
 [server]
 headless = true
+
+[client]
+# Hide the Streamlit "Deploy"/hamburger dev menu so it reads as a finished app.
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
