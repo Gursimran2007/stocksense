@@ -7,6 +7,13 @@ font = "sans serif"
 
 [server]
 headless = true
+# Disable in-process hot-reloading of local modules. Streamlit's watcher can
+# delete the `core` package from sys.modules mid-reload, causing
+# "KeyError: 'core'" and stale-module errors on redeploy. On Streamlit Cloud a
+# git push restarts the whole app anyway, so a watcher is unnecessary here and
+# turning it off makes updates clean and reliable.
+fileWatcherType = "none"
+runOnSave = false
 
 [client]
 # Hide the Streamlit "Deploy"/hamburger dev menu so it reads as a finished app.
