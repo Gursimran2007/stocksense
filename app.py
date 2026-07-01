@@ -22,7 +22,28 @@ from core.engine import build_report, cash_view
 from core.sourcing import whatsapp_link, marketplace_links, tel_link
 
 st.set_page_config(page_title="StockSense", page_icon="S", layout="wide")
-auth.init()
+
+
+@st.cache_resource
+def _init_auth():
+    """Create the auth tables once per server process. Previously this ran on
+    every script rerun, firing a multi-statement Turso pipeline (a remote HTTP
+    round-trip) on every single click — a big, needless latency hit."""
+    auth.init()
+    return True
+
+
+_init_auth()
+
+# A stylised in-brand logo mark (ascending bars) used in both app bars.
+LOGO_MARK = (
+    "<svg width='22' height='22' viewBox='0 0 24 24' fill='none' "
+    "xmlns='http://www.w3.org/2000/svg'>"
+    "<rect x='3' y='13.5' width='4.3' height='7.5' rx='1.6' fill='#fff' fill-opacity='.8'/>"
+    "<rect x='9.85' y='8' width='4.3' height='13' rx='1.6' fill='#fff'/>"
+    "<rect x='16.7' y='3.5' width='4.3' height='17.5' rx='1.6' fill='#fff' fill-opacity='.9'/>"
+    "</svg>"
+)
 
 
 def inject_css():
@@ -85,12 +106,20 @@ def inject_css():
         padding:0 0 16px; margin-bottom:18px; border-bottom:1px solid var(--border);
       }
       .appbar .logo{
-        width:40px; height:40px; border-radius:11px; flex:0 0 40px;
-        background:linear-gradient(145deg, var(--accent-2), var(--accent));
-        color:#fff; font-weight:700; font-size:1.2rem;
+        width:42px; height:42px; border-radius:12px; flex:0 0 42px;
+        background:linear-gradient(145deg, #4A7059, var(--accent) 55%, #294034);
         display:flex; align-items:center; justify-content:center;
-        box-shadow:0 2px 8px rgba(51,80,63,.28), inset 0 1px 0 rgba(255,255,255,.15);
+        box-shadow:0 4px 12px rgba(51,80,63,.32),
+                   inset 0 1px 0 rgba(255,255,255,.22),
+                   inset 0 -2px 6px rgba(0,0,0,.12);
+        transition:transform .2s var(--ease), box-shadow .2s var(--ease);
       }
+      .appbar .logo:hover{
+        transform:translateY(-1px) rotate(-2deg);
+        box-shadow:0 6px 16px rgba(51,80,63,.4),
+                   inset 0 1px 0 rgba(255,255,255,.25);
+      }
+      .appbar .logo svg{ display:block; }
       .appbar .brand-name{ font-size:1.2rem; font-weight:680; line-height:1.1; }
       .appbar .brand-sub{ font-size:.86rem; color:var(--muted); margin-top:2px; }
 
@@ -376,7 +405,7 @@ def _activate_shop(user):
 
 def _render_login():
     st.markdown(
-        "<div class='appbar'><div class='logo'>S</div>"
+        f"<div class='appbar'><div class='logo'>{LOGO_MARK}</div>"
         "<div><div class='brand-name'>StockSense</div>"
         "<div class='brand-sub'>Sign in to your shop</div></div></div>",
         unsafe_allow_html=True)
@@ -519,12 +548,16 @@ with st.sidebar:
             st.rerun()
 
 st.markdown(
-    "<div class='appbar'><div class='logo'>S</div>"
+    f"<div class='appbar'><div class='logo'>{LOGO_MARK}</div>"
     "<div><div class='brand-name'>StockSense</div>"
-    f"<div class='brand-sub'>{t('tagline', LANG)}</div></div></div>",
+    f"<div class='brand-sub'>{_esc(t('tagline', LANG))}</div></div></div>",
     unsafe_allow_html=True)
 
-have_data = bool(db.get_products())
+# One cheap fingerprint query per rerun, reused for cache keys AND to tell if
+# this shop has any data — the product count is field [3] of the signature.
+# This replaces a separate full get_products() round-trip on every rerun.
+DATA_SIG = db.data_signature()
+have_data = int(DATA_SIG.split(":")[3]) > 0
 
 
 def _need_data_hint():
@@ -1195,7 +1228,7 @@ def page_ask():
     hist = st.session_state.setdefault("ask_history", [])
     if question:
         with st.spinner("Crunching your numbers…"):
-            cards = _facts_cached(st.session_state["uid"], db.data_signature())
+            cards = _facts_cached(st.session_state["uid"], DATA_SIG)
             ans = assistant.answer(question, cards=cards)
         hist.append((question, ans))
 
@@ -1227,7 +1260,7 @@ def _report_cached(shop_id, sig):
 _needs_report = page in ("nav_dash", "nav_sell", "nav_restock")
 report = []
 if have_data and _needs_report:
-    report = list(_report_cached(st.session_state["uid"], db.data_signature()))
+    report = list(_report_cached(st.session_state["uid"], DATA_SIG))
     report.sort(key=lambda r: RISK_ORDER.get(r["reorder"]["stockout_risk"], 3))
 
 if page == "nav_dash":
