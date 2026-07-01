@@ -97,8 +97,8 @@ def build_facts(db_path=None):
                 "keywords": f"{name} {sku} yearly annual monthly projection "
                             f"forecast sales revenue turnover units sell",
                 "answer": (
-                    f"**{name}** projection: ~{units_m:.0f} units/month, "
-                    f"~{units_y:.0f} units/year \u2192 about {_inr(rev_y)} in "
+                    f"**{name}** projection: about {units_m:.0f} units/month, "
+                    f"{units_y:.0f} units/year \u2192 roughly {_inr(rev_y)} in "
                     f"annual sales at {_inr(sell)} each."),
             })
 
@@ -132,10 +132,10 @@ def build_facts(db_path=None):
             "keywords": "best top biggest seller highest revenue earner "
                         "most sales popular star product bestseller",
             "answer": (
-                f"Your top earner is **{best_rev['name']}** at ~"
+                f"Your top earner is **{best_rev['name']}** at about "
                 f"{_inr(best_rev['rev_y'])}/year in sales, and your biggest "
-                f"profit driver is **{best_profit['name']}** (~"
-                f"{_inr(best_profit['profit_y'])}/year)."),
+                f"profit driver is **{best_profit['name']}** "
+                f"({_inr(best_profit['profit_y'])}/year profit)."),
         })
         cards.append({
             "keywords": "highest lowest best worst margin markup most "
@@ -239,9 +239,5 @@ def answer(question: str, db_path=None, cards=None) -> str:
                 "yearly sales projection, profit margins, best sellers, dead "
                 "stock, or what to restock.")
 
-    # Return the best card, plus any near-ties (within 15%) as supporting lines.
-    out = [pool[ranked[0][1]]["answer"]]
-    for s, i in ranked[1:3]:
-        if s >= top_score * 0.85:
-            out.append(pool[i]["answer"])
-    return "\n\n".join(out)
+    # Return the single best-matching card — one focused answer per question.
+    return pool[ranked[0][1]]["answer"]
