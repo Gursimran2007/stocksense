@@ -111,6 +111,12 @@ CREATE TABLE IF NOT EXISTS settings(
   PRIMARY KEY(shop_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_sales_shop_sku ON sales(shop_id, sku);
+CREATE TABLE IF NOT EXISTS analytics(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT, day TEXT, kind TEXT,
+  uid INTEGER, visitor TEXT, detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_analytics_day ON analytics(day);
 """
 
 
@@ -530,3 +536,79 @@ def sales_by_sku(db_path=None):
                 (sid,)):
             out.setdefault(r["sku"], []).append({"date": r["date"], "qty": r["qty"]})
     return out
+
+
+# ---- analytics (GLOBAL, not shop-scoped) ---------------------------------
+# Owner-facing traffic tracking. These deliberately do NOT filter by shop_id
+# so the owner can see visits/logins/signups across every shop.
+def log_event(kind, uid=None, visitor="", detail="", db_path=None):
+    """Record one analytics event (visit / login / signup / pageview)."""
+    now = datetime.now()
+    try:
+        with conn(db_path) as c:
+            c.execute(
+                "INSERT INTO analytics(ts,day,kind,uid,visitor,detail) "
+                "VALUES(?,?,?,?,?,?)",
+                (now.isoformat(), now.date().isoformat(), kind,
+                 uid, visitor, detail))
+    except Exception:
+        # analytics must never break the app
+        pass
+
+
+def user_count(db_path=None):
+    with conn(db_path) as c:
+        try:
+            return c.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]
+        except Exception:
+            return 0
+
+
+def analytics_overview(db_path=None):
+    """Headline totals for the owner dashboard."""
+    with conn(db_path) as c:
+        def one(sql, args=()):
+            try:
+                return c.execute(sql, args).fetchone()["n"] or 0
+            except Exception:
+                return 0
+        return {
+            "visits": one("SELECT COUNT(*) n FROM analytics WHERE kind='visit'"),
+            "visitors": one("SELECT COUNT(DISTINCT visitor) n FROM analytics "
+                            "WHERE kind='visit'"),
+            "logins": one("SELECT COUNT(*) n FROM analytics WHERE kind='login'"),
+            "signups": one("SELECT COUNT(*) n FROM analytics WHERE kind='signup'"),
+            "pageviews": one("SELECT COUNT(*) n FROM analytics "
+                             "WHERE kind='pageview'"),
+            "shops": user_count(db_path),
+            "today": one("SELECT COUNT(*) n FROM analytics WHERE kind='visit' "
+                         "AND day=?", (datetime.now().date().isoformat(),)),
+        }
+
+
+def visits_by_day(days=30, db_path=None):
+    """[{day, visits, visitors}] for the last `days` days, oldest first."""
+    with conn(db_path) as c:
+        try:
+            rows = c.execute(
+                "SELECT day, COUNT(*) v, COUNT(DISTINCT visitor) u "
+                "FROM analytics WHERE kind='visit' "
+                "GROUP BY day ORDER BY day DESC LIMIT ?", (days,)).fetchall()
+        except Exception:
+            return []
+    out = [{"day": r["day"], "visits": r["v"], "visitors": r["u"]} for r in rows]
+    out.reverse()
+    return out
+
+
+def top_pages(limit=10, db_path=None):
+    """Most-viewed pages: [{page, views}]."""
+    with conn(db_path) as c:
+        try:
+            rows = c.execute(
+                "SELECT detail page, COUNT(*) v FROM analytics "
+                "WHERE kind='pageview' GROUP BY detail ORDER BY v DESC LIMIT ?",
+                (limit,)).fetchall()
+        except Exception:
+            return []
+    return [{"page": r["page"], "views": r["v"]} for r in rows]
