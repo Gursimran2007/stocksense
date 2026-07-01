@@ -73,7 +73,7 @@ def current_shop():
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products(
   shop_id INTEGER NOT NULL DEFAULT 0,
-  sku TEXT, name TEXT, unit_cost REAL DEFAULT 0,
+  sku TEXT, name TEXT, unit_cost REAL DEFAULT 0, sell_price REAL DEFAULT 0,
   PRIMARY KEY(shop_id, sku)
 );
 CREATE TABLE IF NOT EXISTS sales(
@@ -264,6 +264,13 @@ def conn(db_path=None):
 def init_db(db_path=None):
     with conn(db_path) as c:
         c.executescript(SCHEMA)
+        # Migration: add sell_price to older products tables that predate it.
+        try:
+            cols = [r["name"] for r in c.execute("PRAGMA table_info(products)").fetchall()]
+            if "sell_price" not in cols:
+                c.execute("ALTER TABLE products ADD COLUMN sell_price REAL DEFAULT 0")
+        except Exception:
+            pass
 
 
 def reset_db(db_path=None):
@@ -282,12 +289,16 @@ def upsert_products(rows: Iterable[dict], db_path=None):
     with conn(db_path) as c:
         for r in rows:
             c.execute(
-                """INSERT INTO products(shop_id,sku,name,unit_cost) VALUES(?,?,?,?)
+                """INSERT INTO products(shop_id,sku,name,unit_cost,sell_price)
+                   VALUES(?,?,?,?,?)
                    ON CONFLICT(shop_id,sku) DO UPDATE SET
                      name=COALESCE(NULLIF(excluded.name,''),products.name),
                      unit_cost=CASE WHEN excluded.unit_cost>0
-                                    THEN excluded.unit_cost ELSE products.unit_cost END""",
-                (sid, r["sku"], r.get("name", ""), float(r.get("unit_cost", 0) or 0)))
+                                    THEN excluded.unit_cost ELSE products.unit_cost END,
+                     sell_price=CASE WHEN excluded.sell_price>0
+                                     THEN excluded.sell_price ELSE products.sell_price END""",
+                (sid, r["sku"], r.get("name", ""),
+                 float(r.get("unit_cost", 0) or 0), float(r.get("sell_price", 0) or 0)))
 
 
 def insert_sales(rows: Iterable[dict], db_path=None):
@@ -298,9 +309,11 @@ def insert_sales(rows: Iterable[dict], db_path=None):
                        for r in rows])
 
 
-def record_sale(sku, qty, date=None, db_path=None):
+def record_sale(sku, qty, date=None, price=None, db_path=None):
     """Log a sale AND auto-decrement on-hand stock (never below 0).
-    This is what keeps inventory self-updating — no manual recounting."""
+    This is what keeps inventory self-updating — no manual recounting.
+    If a unit `price` is given (from a bill), remember it as the product's
+    sell_price so profit margins can be computed later."""
     from datetime import date as _d
     sid = current_shop()
     date = date or _d.today().isoformat()
@@ -313,6 +326,9 @@ def record_sale(sku, qty, date=None, db_path=None):
                ON CONFLICT(shop_id,sku) DO UPDATE SET
                  on_hand=MAX(inventory.on_hand - ?, 0), updated_at=excluded.updated_at""",
             (sid, sku, now, float(qty)))
+        if price and float(price) > 0:
+            c.execute("UPDATE products SET sell_price=? WHERE shop_id=? AND sku=?",
+                      (float(price), sid, sku))
 
 
 def receive_stock(sku, qty, db_path=None):

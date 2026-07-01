@@ -12,6 +12,7 @@ import streamlit as st
 
 from core import db
 from core import auth
+from core import assistant
 from core.adapters import TabularAdapter, ManualAdapter
 from core.seed import seed_db, write_messy_excel
 from core.engine import build_report, cash_view
@@ -160,6 +161,7 @@ T = {
                       "hinglish": "Suppliers"},
     "nav_input": {"en": "Inventory input", "hi": "स्टॉक भरें",
                   "hinglish": "Stock bharo"},
+    "nav_ask": {"en": "Ask", "hi": "पूछें", "hinglish": "Pucho"},
     # ---- restock ----
     "buy_these": {"en": "Buy these now", "hi": "अभी यह खरीदें",
                   "hinglish": "Abhi ye kharido"},
@@ -387,7 +389,8 @@ with st.sidebar:
     LANG = LANGS[lang_name]
     st.divider()
     st.markdown("<div class='nav-head'>Menu</div>", unsafe_allow_html=True)
-    PAGES = ["nav_dash", "nav_sell", "nav_restock", "nav_suppliers", "nav_input"]
+    PAGES = ["nav_dash", "nav_sell", "nav_restock", "nav_suppliers",
+             "nav_input", "nav_ask"]
     page = st.radio(" ", PAGES, format_func=lambda k: t(k, LANG),
                     label_visibility="collapsed")
     st.divider()
@@ -605,7 +608,7 @@ def page_sell(report):
             for r in edited:
                 q = int(r["Qty"] or 0)
                 if r["sku"] and q > 0:
-                    db.record_sale(r["sku"], q); n += 1
+                    db.record_sale(r["sku"], q, price=float(r["Price"] or 0)); n += 1
             st.session_state["bill_cart"] = {}
             st.success(f"Bill saved · {n} item(s) · ₹{total:,.2f}. Stock updated.")
             st.rerun()
@@ -1072,6 +1075,51 @@ def page_input():
                                 "Status": status.get(n, "")} for n in REGISTRY]))
 
 
+@st.cache_data(show_spinner=False)
+def _facts_cached(shop_id, sig):
+    """Cache the assistant's fact cards; rebuild only when data changes."""
+    return assistant.build_facts()
+
+
+def page_ask():
+    st.subheader("💬 " + t("nav_ask", LANG))
+    st.caption("Ask about your yearly sales, profit margins, best sellers, "
+               "dead stock or what to restock. Answers use your real data.")
+
+    if not have_data:
+        st.info("Add products and record a few sales first, then ask away.")
+        return
+
+    suggestions = [
+        "What's my yearly sales projection?",
+        "What's my profit margin?",
+        "Which product makes the most profit?",
+        "What should I restock?",
+        "What stock isn't selling?",
+    ]
+    cols = st.columns(len(suggestions))
+    picked = None
+    for i, s in enumerate(suggestions):
+        if cols[i].button(s, key=f"ask_sug_{i}", use_container_width=True):
+            picked = s
+
+    q = st.chat_input("Ask a question about your shop…")
+    question = picked or q
+
+    hist = st.session_state.setdefault("ask_history", [])
+    if question:
+        with st.spinner("Crunching your numbers…"):
+            cards = _facts_cached(st.session_state["uid"], db.data_signature())
+            ans = assistant.answer(question, cards=cards)
+        hist.append((question, ans))
+
+    for uq, ua in reversed(hist):
+        with st.chat_message("user"):
+            st.markdown(uq)
+        with st.chat_message("assistant"):
+            st.markdown(ua)
+
+
 # ============================================================ DISPATCH
 @st.cache_data(show_spinner=False)
 def _report_cached(shop_id, sig):
@@ -1098,3 +1146,5 @@ elif page == "nav_suppliers":
     page_suppliers()
 elif page == "nav_input":
     page_input()
+elif page == "nav_ask":
+    page_ask()
