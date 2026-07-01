@@ -7,6 +7,8 @@ Five-page layout (sidebar nav):
   4. Suppliers          — named suppliers, edit them, assign one per product
   5. Inventory input    — set current stock, add items, upload / auto-sync
 """
+import uuid
+
 import pandas as pd
 import streamlit as st
 
@@ -162,6 +164,8 @@ T = {
     "nav_input": {"en": "Inventory input", "hi": "स्टॉक भरें",
                   "hinglish": "Stock bharo"},
     "nav_ask": {"en": "Ask", "hi": "पूछें", "hinglish": "Pucho"},
+    "nav_analytics": {"en": "Analytics", "hi": "एनालिटिक्स",
+                      "hinglish": "Analytics"},
     # ---- restock ----
     "buy_these": {"en": "Buy these now", "hi": "अभी यह खरीदें",
                   "hinglish": "Abhi ye kharido"},
@@ -333,6 +337,7 @@ def _render_login():
             else:
                 token = auth.create_session(user["id"])
                 st.query_params["s"] = token
+                db.log_event("login", uid=user["id"], visitor=_visitor_id())
                 _activate_shop(user)
                 st.rerun()
 
@@ -356,6 +361,7 @@ def _render_login():
                             "shop_name": shop.strip()}
                     token = auth.create_session(uid)
                     st.query_params["s"] = token
+                    db.log_event("signup", uid=uid, visitor=_visitor_id())
                     _activate_shop(user)
                     st.rerun()
 
@@ -375,6 +381,22 @@ def _auth_gate():
     st.stop()
 
 
+def _visitor_id():
+    """Stable-per-browser-session id, a reasonable proxy for a unique visitor."""
+    vid = st.session_state.get("_vid")
+    if not vid:
+        vid = uuid.uuid4().hex[:16]
+        st.session_state["_vid"] = vid
+    return vid
+
+
+# Count one visit per browser session (before the auth gate, so anonymous
+# visitors who never log in are still counted as traffic).
+if not st.session_state.get("_visit_logged"):
+    db.log_event("visit", uid=st.session_state.get("uid"),
+                 visitor=_visitor_id())
+    st.session_state["_visit_logged"] = True
+
 _auth_gate()
 
 
@@ -391,8 +413,20 @@ with st.sidebar:
     st.markdown("<div class='nav-head'>Menu</div>", unsafe_allow_html=True)
     PAGES = ["nav_dash", "nav_sell", "nav_restock", "nav_suppliers",
              "nav_input", "nav_ask"]
+    # Owner-only analytics page (comma-separated usernames in STOCKSENSE_ADMIN).
+    _admins = {x.strip().lower()
+               for x in (db._cfg("STOCKSENSE_ADMIN") or "gurr").split(",") if x}
+    IS_ADMIN = st.session_state.get("username", "").lower() in _admins
+    if IS_ADMIN:
+        PAGES = PAGES + ["nav_analytics"]
     page = st.radio(" ", PAGES, format_func=lambda k: t(k, LANG),
                     label_visibility="collapsed")
+
+    # Traffic: log a pageview whenever the shown page changes this session.
+    if st.session_state.get("_last_page") != page:
+        db.log_event("pageview", uid=st.session_state.get("uid"),
+                     visitor=_visitor_id(), detail=t(page, "en"))
+        st.session_state["_last_page"] = page
     st.divider()
     if st.button("Load demo shop", use_container_width=True):
         seed_db(); st.session_state.pop("imported_file", None); st.rerun()
@@ -1113,11 +1147,55 @@ def page_ask():
             ans = assistant.answer(question, cards=cards)
         hist.append((question, ans))
 
+    if hist and st.button("Clear chat", key="ask_clear"):
+        st.session_state["ask_history"] = []
+        st.rerun()
+
+    # Escape stray '~' so a tilde never renders as strikethrough.
+    def _md(txt):
+        return (txt or "").replace("~", "\\~")
+
     for uq, ua in hist:
         with st.chat_message("user"):
-            st.markdown(uq)
+            st.markdown(_md(uq))
         with st.chat_message("assistant"):
-            st.markdown(ua)
+            st.markdown(_md(ua))
+
+
+def page_analytics():
+    st.subheader("📊 " + t("nav_analytics", LANG))
+    st.caption("Traffic and usage across every shop on StockSense (owner view).")
+
+    ov = db.analytics_overview()
+    c = st.columns(4)
+    c[0].metric("Total visits", f"{ov['visits']:,}")
+    c[1].metric("Unique visitors", f"{ov['visitors']:,}")
+    c[2].metric("Visits today", f"{ov['today']:,}")
+    c[3].metric("Registered shops", f"{ov['shops']:,}")
+    c = st.columns(4)
+    c[0].metric("Logins", f"{ov['logins']:,}")
+    c[1].metric("Sign-ups", f"{ov['signups']:,}")
+    c[2].metric("Page views", f"{ov['pageviews']:,}")
+    conv = (ov["signups"] / ov["visitors"] * 100) if ov["visitors"] else 0
+    c[3].metric("Visitor → sign-up", f"{conv:.0f}%")
+
+    st.divider()
+    daily = db.visits_by_day(30)
+    if daily:
+        df = pd.DataFrame(daily).set_index("day")
+        st.markdown("**Visits per day (last 30 days)**")
+        st.bar_chart(df["visits"])
+        st.markdown("**Unique visitors per day**")
+        st.line_chart(df["visitors"])
+    else:
+        st.info("No visits recorded yet. Traffic will appear here as people "
+                "open the app.")
+
+    pages = db.top_pages(10)
+    if pages:
+        st.markdown("**Most-viewed pages**")
+        st.dataframe(pd.DataFrame(pages), hide_index=True,
+                     use_container_width=True)
 
 
 # ============================================================ DISPATCH
@@ -1148,3 +1226,5 @@ elif page == "nav_input":
     page_input()
 elif page == "nav_ask":
     page_ask()
+elif page == "nav_analytics":
+    page_analytics()
