@@ -7,6 +7,7 @@ Five-page layout (sidebar nav):
   4. Suppliers          — named suppliers, edit them, assign one per product
   5. Inventory input    — set current stock, add items, upload / auto-sync
 """
+import html
 import uuid
 
 import pandas as pd
@@ -32,11 +33,22 @@ def inject_css():
         --bg:#F4F1E8; --surface:#FFFFFF; --border:#E2DCC9; --border-2:#ECE7D8;
         --text:#1E2A22; --muted:#6E7A6C; --accent:#33503F; --accent-2:#3F624D;
         --accent-soft:#E7EDE4;
+        --radius:12px; --radius-sm:9px;
+        --shadow-sm:0 1px 2px rgba(30,42,34,.06), 0 1px 3px rgba(30,42,34,.05);
+        --shadow-md:0 4px 14px rgba(30,42,34,.07), 0 1px 3px rgba(30,42,34,.05);
+        --ease:cubic-bezier(.4,0,.2,1);
       }
-      html, body, [class*="css"] { font-family:'Inter',sans-serif; color:var(--text); }
-      .stApp { background:var(--bg); }
+      html, body, [class*="css"] { font-family:'Inter',sans-serif; color:var(--text);
+        -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
+      html{ scroll-behavior:smooth; }
+      .stApp { background:
+        radial-gradient(1200px 600px at 100% -10%, #EFEADB 0%, transparent 55%),
+        var(--bg); }
       header[data-testid="stHeader"]{ background:transparent; }
       [data-testid="stToolbar"]{ display:none; }
+      /* Gentle fade/rise so page switches feel smooth, not jumpy. */
+      @keyframes ssRise{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;} }
+      .main .block-container{ animation:ssRise .28s var(--ease) both; }
       /* Default Streamlit slides the collapsed sidebar fully off-screen,
          taking its only re-open arrow with it -> no way to reopen. Instead
          keep a thin on-screen rail (no translate) that holds just the toggle
@@ -73,34 +85,48 @@ def inject_css():
         padding:0 0 16px; margin-bottom:18px; border-bottom:1px solid var(--border);
       }
       .appbar .logo{
-        width:38px; height:38px; border-radius:9px; flex:0 0 38px;
-        background:var(--accent); color:#fff; font-weight:700; font-size:1.15rem;
+        width:40px; height:40px; border-radius:11px; flex:0 0 40px;
+        background:linear-gradient(145deg, var(--accent-2), var(--accent));
+        color:#fff; font-weight:700; font-size:1.2rem;
         display:flex; align-items:center; justify-content:center;
-        box-shadow:0 1px 2px rgba(15,23,42,.12);
+        box-shadow:0 2px 8px rgba(51,80,63,.28), inset 0 1px 0 rgba(255,255,255,.15);
       }
-      .appbar .brand-name{ font-size:1.18rem; font-weight:650; line-height:1.1; }
-      .appbar .brand-sub{ font-size:.86rem; color:var(--muted); margin-top:1px; }
+      .appbar .brand-name{ font-size:1.2rem; font-weight:680; line-height:1.1; }
+      .appbar .brand-sub{ font-size:.86rem; color:var(--muted); margin-top:2px; }
 
-      /* ---- metric cards: flat, data-dense ---- */
+      /* ---- metric cards: soft, tactile, data-dense ---- */
       [data-testid="stMetric"]{
         background:var(--surface); border:1px solid var(--border);
-        border-radius:10px; padding:14px 16px;
+        border-radius:var(--radius); padding:16px 18px;
+        box-shadow:var(--shadow-sm); position:relative; overflow:hidden;
+        transition:transform .18s var(--ease), box-shadow .18s var(--ease);
       }
+      [data-testid="stMetric"]::before{
+        content:""; position:absolute; left:0; top:0; bottom:0; width:3px;
+        background:linear-gradient(var(--accent-2), var(--accent)); opacity:.9;
+      }
+      [data-testid="stMetric"]:hover{ transform:translateY(-2px); box-shadow:var(--shadow-md); }
       [data-testid="stMetricLabel"] p{
         font-size:.72rem !important; font-weight:600; letter-spacing:.04em;
         text-transform:uppercase; color:var(--muted);
       }
-      [data-testid="stMetricValue"]{ font-weight:650; font-size:1.7rem; }
+      [data-testid="stMetricValue"]{ font-weight:680; font-size:1.75rem; }
 
-      /* ---- buttons: flat, no bounce ---- */
+      /* ---- buttons: soft, smooth, no bounce ---- */
       .stButton>button, .stDownloadButton>button, .stLinkButton>a,
       [data-testid="stFormSubmitButton"]>button{
-        border-radius:8px; font-weight:550; font-size:.92rem;
+        border-radius:var(--radius-sm); font-weight:550; font-size:.92rem;
         border:1px solid var(--border); background:var(--surface); color:var(--text);
-        transition:background .12s ease, border-color .12s ease;
+        box-shadow:var(--shadow-sm);
+        transition:background .16s var(--ease), border-color .16s var(--ease),
+                   transform .16s var(--ease), box-shadow .16s var(--ease);
       }
       .stButton>button:hover, .stDownloadButton>button:hover, .stLinkButton>a:hover{
         border-color:#CBD2E0; background:#F4F6FA;
+        transform:translateY(-1px); box-shadow:var(--shadow-md);
+      }
+      .stButton>button:active, [data-testid="stFormSubmitButton"]>button:active{
+        transform:translateY(0); box-shadow:var(--shadow-sm);
       }
       .stButton>button[kind="primary"], .stLinkButton>a[kind="primary"],
       [data-testid="stFormSubmitButton"]>button[kind="primary"]{
@@ -132,12 +158,38 @@ def inject_css():
       [data-testid="stSidebar"] [role="radiogroup"] label > div:first-child{ display:none; }
 
       /* ---- surfaces ---- */
-      [data-testid="stExpander"]{ border:1px solid var(--border); border-radius:10px; box-shadow:none; }
+      [data-testid="stExpander"]{
+        border:1px solid var(--border); border-radius:var(--radius);
+        box-shadow:var(--shadow-sm); overflow:hidden; background:var(--surface);
+        transition:box-shadow .18s var(--ease);
+      }
+      [data-testid="stExpander"]:hover{ box-shadow:var(--shadow-md); }
+      [data-testid="stExpander"] summary:hover{ color:var(--accent); }
       [data-testid="stDataFrame"], [data-testid="stTable"]{
-        border-radius:8px; overflow:hidden; border:1px solid var(--border);
+        border-radius:var(--radius-sm); overflow:hidden; border:1px solid var(--border);
+        box-shadow:var(--shadow-sm);
       }
       [data-testid="stSidebar"] .stButton>button{ font-size:.86rem; }
       hr{ margin:1rem 0; border-color:var(--border-2); }
+
+      /* ---- chat: modern rounded bubbles ---- */
+      [data-testid="stChatMessage"]{
+        background:var(--surface); border:1px solid var(--border);
+        border-radius:14px; padding:2px 6px; box-shadow:var(--shadow-sm);
+        animation:ssRise .24s var(--ease) both;
+      }
+      [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]){
+        background:var(--accent-soft); border-color:#D6E0D2;
+      }
+      [data-testid="stChatInput"] textarea{ border-radius:12px; }
+
+      /* ---- inputs: subtle focus ring in brand colour ---- */
+      [data-testid="stTextInput"] input:focus,
+      [data-testid="stNumberInput"] input:focus,
+      [data-baseweb="select"] > div:focus-within{
+        border-color:var(--accent) !important;
+        box-shadow:0 0 0 2px var(--accent-soft) !important;
+      }
     </style>
     """, unsafe_allow_html=True)
 
@@ -235,6 +287,14 @@ DOT = {"high": "#B4543A", "medium": "#C8A04B", "low": "#5C7A5E"}
 
 def _dot(color):
     return f"<span style='color:{color};font-size:1.05em'>&#9679;</span>"
+
+
+def _esc(s):
+    """HTML-escape any user-supplied string before it goes into raw HTML
+    (unsafe_allow_html). Shop names and product names come from signup, manual
+    entry and uploaded files, so without this a value like
+    ``<img src=x onerror=...>`` would execute as script (stored XSS)."""
+    return html.escape(str(s if s is not None else ""))
 
 
 def _sku_from_name(name, taken):
@@ -403,7 +463,7 @@ with st.sidebar:
     st.markdown(
         f"<div class='nav-head'>Shop</div>"
         f"<div style='font-weight:600;margin-bottom:.5rem'>"
-        f"{st.session_state.get('shop_name','')}</div>",
+        f"{_esc(st.session_state.get('shop_name',''))}</div>",
         unsafe_allow_html=True)
     lang_name = st.selectbox("Language", list(LANGS.keys()))
     LANG = LANGS[lang_name]
@@ -531,7 +591,7 @@ def _ai_analysis_panel(report):
         if rising:
             for r in rising[:4]:
                 a = r["forecast"]["ai_analysis"]
-                st.markdown(f"{_dot(DOT['low'])} **{r['name'] or r['sku']}** "
+                st.markdown(f"{_dot(DOT['low'])} **{_esc(r['name'] or r['sku'])}** "
                             f"&nbsp;+{a['trend_pct_month']:.0f}%/mo",
                             unsafe_allow_html=True)
         else:
@@ -541,7 +601,7 @@ def _ai_analysis_panel(report):
         if falling:
             for r in falling[:4]:
                 a = r["forecast"]["ai_analysis"]
-                st.markdown(f"{_dot(DOT['high'])} **{r['name'] or r['sku']}** "
+                st.markdown(f"{_dot(DOT['high'])} **{_esc(r['name'] or r['sku'])}** "
                             f"&nbsp;{a['trend_pct_month']:.0f}%/mo",
                             unsafe_allow_html=True)
         else:
@@ -809,7 +869,7 @@ def page_restock(report):
                 item = l.name or l.sku
                 dot = _dot(DOT.get(l.stockout_risk, DOT["medium"]))
                 cols = st.columns([3, 2, 3])
-                cols[0].markdown(f"{dot} **{item}** — buy **{int(l.qty)}** · "
+                cols[0].markdown(f"{dot} **{_esc(item)}** — buy **{int(l.qty)}** · "
                                  f"₹{l.cost:,.0f}", unsafe_allow_html=True)
                 cols[1].link_button(
                     t("order", LANG),
