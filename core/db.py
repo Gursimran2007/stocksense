@@ -1,4 +1,5 @@
 """SQLite / libSQL persistence for the normalized schema. No ORM, no heavy deps.
+Schema/version: products carries sell_price; data_signature() cache key present.
 
 Two backends, one code path:
   * Local dev / demo  -> a single SQLite file under DATA_DIR.
