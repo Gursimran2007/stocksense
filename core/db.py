@@ -232,10 +232,10 @@ class _HttpConn:
         pass            # statements autocommit on the server
 
     def close(self):
-        try:
-            self._pipeline([{"type": "close"}])
-        except Exception:
-            pass
+        # Deliberately no network call: sending a `close` would cost a full
+        # extra HTTP round-trip (~200ms) on every single conn() block. The
+        # server expires idle connection batons on its own, so we just drop it.
+        self._baton = None
 
 
 @contextmanager
@@ -480,3 +480,36 @@ def sales_for(sku, db_path=None):
         return [dict(x) for x in c.execute(
             "SELECT date,qty FROM sales WHERE shop_id=? AND sku=? ORDER BY date",
             (sid, sku))]
+
+
+def data_signature(db_path=None):
+    """A cheap fingerprint of this shop's data in ONE query. Changes whenever
+    anything is written, so it's a safe cache key for the expensive report —
+    no manual cache-busting on each write path."""
+    sid = current_shop()
+    with conn(db_path) as c:
+        r = c.execute(
+            """SELECT
+                 (SELECT COUNT(*) FROM sales WHERE shop_id=?)                  AS ns,
+                 (SELECT COALESCE(MAX(id),0) FROM sales WHERE shop_id=?)        AS ms,
+                 (SELECT COUNT(*) FROM products WHERE shop_id=?)               AS np,
+                 (SELECT COUNT(*) FROM inventory WHERE shop_id=?)             AS ni,
+                 (SELECT COALESCE(MAX(updated_at),'') FROM inventory WHERE shop_id=?) AS mi,
+                 (SELECT COUNT(*) FROM suppliers WHERE shop_id=?)             AS nsup,
+                 (SELECT COUNT(*) FROM supplier_master WHERE shop_id=?)       AS nsm,
+                 (SELECT COUNT(*) FROM outcomes WHERE shop_id=?)             AS no""",
+            (sid, sid, sid, sid, sid, sid, sid, sid)).fetchone()
+    return f"{sid}:{r['ns']}:{r['ms']}:{r['np']}:{r['ni']}:{r['mi']}:{r['nsup']}:{r['nsm']}:{r['no']}"
+
+
+def sales_by_sku(db_path=None):
+    """All of this shop's sales grouped {sku: [{date,qty}, ...]} in ONE query.
+    Avoids a per-SKU round trip — critical when the DB is remote (Turso)."""
+    sid = current_shop()
+    out = {}
+    with conn(db_path) as c:
+        for r in c.execute(
+                "SELECT sku,date,qty FROM sales WHERE shop_id=? ORDER BY date",
+                (sid,)):
+            out.setdefault(r["sku"], []).append({"date": r["date"], "qty": r["qty"]})
+    return out
