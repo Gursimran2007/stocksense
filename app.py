@@ -164,8 +164,6 @@ T = {
     "nav_input": {"en": "Inventory input", "hi": "स्टॉक भरें",
                   "hinglish": "Stock bharo"},
     "nav_ask": {"en": "Ask", "hi": "पूछें", "hinglish": "Pucho"},
-    "nav_analytics": {"en": "Analytics", "hi": "एनालिटिक्स",
-                      "hinglish": "Analytics"},
     # ---- restock ----
     "buy_these": {"en": "Buy these now", "hi": "अभी यह खरीदें",
                   "hinglish": "Abhi ye kharido"},
@@ -413,12 +411,6 @@ with st.sidebar:
     st.markdown("<div class='nav-head'>Menu</div>", unsafe_allow_html=True)
     PAGES = ["nav_dash", "nav_sell", "nav_restock", "nav_suppliers",
              "nav_input", "nav_ask"]
-    # Owner-only analytics page (comma-separated usernames in STOCKSENSE_ADMIN).
-    _admins = {x.strip().lower()
-               for x in (db._cfg("STOCKSENSE_ADMIN") or "gurr").split(",") if x}
-    IS_ADMIN = st.session_state.get("username", "").lower() in _admins
-    if IS_ADMIN:
-        PAGES = PAGES + ["nav_analytics"]
     page = st.radio(" ", PAGES, format_func=lambda k: t(k, LANG),
                     label_visibility="collapsed")
 
@@ -1162,42 +1154,6 @@ def page_ask():
             st.markdown(_md(ua))
 
 
-def page_analytics():
-    st.subheader("📊 " + t("nav_analytics", LANG))
-    st.caption("Traffic and usage across every shop on StockSense (owner view).")
-
-    ov = db.analytics_overview()
-    c = st.columns(4)
-    c[0].metric("Total visits", f"{ov['visits']:,}")
-    c[1].metric("Unique visitors", f"{ov['visitors']:,}")
-    c[2].metric("Visits today", f"{ov['today']:,}")
-    c[3].metric("Registered shops", f"{ov['shops']:,}")
-    c = st.columns(4)
-    c[0].metric("Logins", f"{ov['logins']:,}")
-    c[1].metric("Sign-ups", f"{ov['signups']:,}")
-    c[2].metric("Page views", f"{ov['pageviews']:,}")
-    conv = (ov["signups"] / ov["visitors"] * 100) if ov["visitors"] else 0
-    c[3].metric("Visitor → sign-up", f"{conv:.0f}%")
-
-    st.divider()
-    daily = db.visits_by_day(30)
-    if daily:
-        df = pd.DataFrame(daily).set_index("day")
-        st.markdown("**Visits per day (last 30 days)**")
-        st.bar_chart(df["visits"])
-        st.markdown("**Unique visitors per day**")
-        st.line_chart(df["visitors"])
-    else:
-        st.info("No visits recorded yet. Traffic will appear here as people "
-                "open the app.")
-
-    pages = db.top_pages(10)
-    if pages:
-        st.markdown("**Most-viewed pages**")
-        st.dataframe(pd.DataFrame(pages), hide_index=True,
-                     use_container_width=True)
-
-
 # ============================================================ DISPATCH
 @st.cache_data(show_spinner=False)
 def _report_cached(shop_id, sig):
@@ -1226,5 +1182,3 @@ elif page == "nav_input":
     page_input()
 elif page == "nav_ask":
     page_ask()
-elif page == "nav_analytics":
-    page_analytics()
