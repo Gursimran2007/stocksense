@@ -1113,7 +1113,7 @@ def page_ask():
             ans = assistant.answer(question, cards=cards)
         hist.append((question, ans))
 
-    for uq, ua in reversed(hist):
+    for uq, ua in hist:
         with st.chat_message("user"):
             st.markdown(uq)
         with st.chat_message("assistant"):
