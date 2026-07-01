@@ -1073,10 +1073,19 @@ def page_input():
 
 
 # ============================================================ DISPATCH
+@st.cache_data(show_spinner=False)
+def _report_cached(shop_id, sig):
+    """Rebuild the report only when the shop's data signature changes.
+    Streamlit reruns the whole script on every click; without this each click
+    would re-hit the remote DB and retrain the forecaster (~2s). `sig` changes
+    on any write, so the cache is always correct and never stale."""
+    return build_report()
+
+
 _needs_report = page in ("nav_dash", "nav_sell", "nav_restock")
 report = []
 if have_data and _needs_report:
-    report = build_report()
+    report = list(_report_cached(st.session_state["uid"], db.data_signature()))
     report.sort(key=lambda r: RISK_ORDER.get(r["reorder"]["stockout_risk"], 3))
 
 if page == "nav_dash":

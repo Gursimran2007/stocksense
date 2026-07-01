@@ -25,7 +25,9 @@ def build_report(service_level=0.95, horizon_days=30,
 
     # Train the AI forecaster once on the whole shop (cross-SKU pooling),
     # then ask it per SKU below. Cold-start SKUs fall back internally.
-    sales_by_sku = {sku: db.sales_for(sku, db_path) for sku in products}
+    sales_by_sku = db.sales_by_sku(db_path)          # one query, not one per SKU
+    for sku in products:                             # ensure every product is present
+        sales_by_sku.setdefault(sku, [])
     ai = AIForecaster(horizon_days=horizon_days).fit(sales_by_sku)
 
     rows = []
