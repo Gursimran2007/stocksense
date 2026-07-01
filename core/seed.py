@@ -15,15 +15,15 @@ from . import db
 random.seed(42)
 
 CATALOG = [
-    # sku, name, unit_cost, base_daily, pattern, lead, reliability, on_hand
-    ("RICE-5KG",   "Basmati Rice 5kg",      420, 12, "trend_up",   5, 0.97, 60),
-    ("OIL-1L",     "Sunflower Oil 1L",      140, 20, "regular",    4, 0.95, 30),
-    ("SOAP-100",   "Bath Soap 100g",         28, 35, "regular",    3, 0.98, 200),
-    ("TEA-250",    "Masala Tea 250g",       110,  8, "trend_down", 7, 0.90, 90),
-    ("BULB-LED",   "LED Bulb 9W",            70,  2, "lumpy",     10, 0.85, 15),
-    ("FILTER-AC",  "AC Filter (spare)",     350,  0.5, "lumpy",   14, 0.80, 4),
-    ("PEN-BLUE",   "Blue Gel Pen",            6,  1, "dead",       5, 0.95, 500),
-    ("ATTA-10KG",  "Wheat Atta 10kg",       360, 15, "regular",    5, 0.96, 25),
+    # sku, name, unit_cost, sell_price, base_daily, pattern, lead, reliability, on_hand
+    ("RICE-5KG",   "Basmati Rice 5kg",      420, 480, 12, "trend_up",   5, 0.97, 60),
+    ("OIL-1L",     "Sunflower Oil 1L",      140, 165, 20, "regular",    4, 0.95, 30),
+    ("SOAP-100",   "Bath Soap 100g",         28,  40, 35, "regular",    3, 0.98, 200),
+    ("TEA-250",    "Masala Tea 250g",       110, 145,  8, "trend_down", 7, 0.90, 90),
+    ("BULB-LED",   "LED Bulb 9W",            70, 110,  2, "lumpy",     10, 0.85, 15),
+    ("FILTER-AC",  "AC Filter (spare)",     350, 499,  0.5, "lumpy",   14, 0.80, 4),
+    ("PEN-BLUE",   "Blue Gel Pen",            6,  10,  1, "dead",       5, 0.95, 500),
+    ("ATTA-10KG",  "Wheat Atta 10kg",       360, 410, 15, "regular",    5, 0.96, 25),
 ]
 
 START = date.today() - timedelta(days=120)
@@ -57,8 +57,9 @@ def _series(base, pattern, days=120):
 def seed_db(db_path=None):
     db.reset_db(db_path)
     products, sales, inv, sup = [], [], [], []
-    for sku, name, cost, base, pat, lead, rel, oh in CATALOG:
-        products.append({"sku": sku, "name": name, "unit_cost": cost})
+    for sku, name, cost, sell, base, pat, lead, rel, oh in CATALOG:
+        products.append({"sku": sku, "name": name, "unit_cost": cost,
+                         "sell_price": sell})
         inv.append({"sku": sku, "stock": oh})
         sup.append({"sku": sku, "lead_time_days": lead, "reliability": rel})
         for d, q in _series(base, pat):
@@ -75,7 +76,7 @@ def write_messy_excel(path=None):
     path = Path(path or Path(__file__).resolve().parent.parent / "demo_messy.xlsx")
     rows = []
     fmts = ["%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%b-%Y"]
-    for sku, name, cost, base, pat, lead, rel, oh in CATALOG[:5]:
+    for sku, name, cost, sell, base, pat, lead, rel, oh in CATALOG[:5]:
         for d, q in _series(base, pat, days=60):
             rows.append({
                 "Particulars": name,            # name (odd header)
