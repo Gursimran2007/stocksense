@@ -229,6 +229,15 @@ class _HttpConn:
             self._pipeline([self._stmt(sql, p) for p in seq[i:i + 200]])
         return self
 
+    def execute_all(self, statements):
+        """Run many *different* (sql, params) statements in as few HTTP
+        round-trips as possible — one pipeline per 200-statement chunk. Without
+        this, a loop of c.execute(...) calls is one network round-trip each."""
+        stmts = [self._stmt(sql, params) for sql, params in statements]
+        for i in range(0, len(stmts), 200):
+            self._pipeline(stmts[i:i + 200])
+        return self
+
     def executescript(self, sql):
         stmts = [s.strip() for s in sql.split(";") if s.strip()]
         if stmts:
@@ -268,7 +277,30 @@ def conn(db_path=None):
             c.close()
 
 
+def _run_batch(c, statements):
+    """Execute many heterogeneous (sql, params) statements on an open connection.
+    On Turso these go out in a single HTTP pipeline instead of one round-trip
+    per statement; on local sqlite it's a plain loop."""
+    statements = list(statements)
+    if not statements:
+        return
+    if isinstance(c, _HttpConn):
+        c.execute_all(statements)
+    else:
+        for sql, params in statements:
+            c.execute(sql, params)
+
+
+# The shared tables only need creating once per server process (row-level
+# tenancy means every shop uses the same tables). Re-running the full CREATE/
+# ALTER script on every login was a needless multi-statement remote round-trip.
+_schema_ready = False
+
+
 def init_db(db_path=None):
+    global _schema_ready
+    if db_path is None and _schema_ready:
+        return
     with conn(db_path) as c:
         c.executescript(SCHEMA)
         # Migration: add sell_price to older products tables that predate it.
@@ -278,6 +310,8 @@ def init_db(db_path=None):
                 c.execute("ALTER TABLE products ADD COLUMN sell_price REAL DEFAULT 0")
         except Exception:
             pass
+    if db_path is None:
+        _schema_ready = True
 
 
 def reset_db(db_path=None):
@@ -293,19 +327,22 @@ def reset_db(db_path=None):
 # ---- upserts -------------------------------------------------------------
 def upsert_products(rows: Iterable[dict], db_path=None):
     sid = current_shop()
+    rows = list(rows)
+    if not rows:
+        return
     with conn(db_path) as c:
-        for r in rows:
-            c.execute(
-                """INSERT INTO products(shop_id,sku,name,unit_cost,sell_price)
-                   VALUES(?,?,?,?,?)
-                   ON CONFLICT(shop_id,sku) DO UPDATE SET
-                     name=COALESCE(NULLIF(excluded.name,''),products.name),
-                     unit_cost=CASE WHEN excluded.unit_cost>0
-                                    THEN excluded.unit_cost ELSE products.unit_cost END,
-                     sell_price=CASE WHEN excluded.sell_price>0
-                                     THEN excluded.sell_price ELSE products.sell_price END""",
-                (sid, r["sku"], r.get("name", ""),
-                 float(r.get("unit_cost", 0) or 0), float(r.get("sell_price", 0) or 0)))
+        c.executemany(
+            """INSERT INTO products(shop_id,sku,name,unit_cost,sell_price)
+               VALUES(?,?,?,?,?)
+               ON CONFLICT(shop_id,sku) DO UPDATE SET
+                 name=COALESCE(NULLIF(excluded.name,''),products.name),
+                 unit_cost=CASE WHEN excluded.unit_cost>0
+                                THEN excluded.unit_cost ELSE products.unit_cost END,
+                 sell_price=CASE WHEN excluded.sell_price>0
+                                 THEN excluded.sell_price ELSE products.sell_price END""",
+            [(sid, r["sku"], r.get("name", ""),
+              float(r.get("unit_cost", 0) or 0), float(r.get("sell_price", 0) or 0))
+             for r in rows])
 
 
 def insert_sales(rows: Iterable[dict], db_path=None):
@@ -350,31 +387,89 @@ def receive_stock(sku, qty, db_path=None):
             (sid, sku, float(qty), now, float(qty)))
 
 
+def record_sales_bulk(items, date=None, db_path=None):
+    """Record many sales at once (a whole bill / register / sell-form) in a
+    single DB round-trip instead of one per line.
+
+    `items` is an iterable of (sku, qty[, price]); price is optional and, when
+    > 0, updates that product's sell_price. Each line logs a sale AND decrements
+    on-hand stock (never below 0) — identical semantics to record_sale()."""
+    from datetime import date as _d
+    sid = current_shop()
+    date = date or _d.today().isoformat()
+    now = datetime.now().isoformat()
+    stmts = []
+    for it in items:
+        sku, qty = it[0], float(it[1] or 0)
+        price = float(it[2]) if len(it) > 2 and it[2] else 0.0
+        if not sku or qty <= 0:
+            continue
+        stmts.append(("INSERT INTO sales(shop_id,sku,date,qty) VALUES(?,?,?,?)",
+                      (sid, sku, date, qty)))
+        stmts.append((
+            """INSERT INTO inventory(shop_id,sku,on_hand,updated_at) VALUES(?,?,0,?)
+               ON CONFLICT(shop_id,sku) DO UPDATE SET
+                 on_hand=MAX(inventory.on_hand - ?, 0), updated_at=excluded.updated_at""",
+            (sid, sku, now, qty)))
+        if price > 0:
+            stmts.append(("UPDATE products SET sell_price=? WHERE shop_id=? AND sku=?",
+                          (price, sid, sku)))
+    if not stmts:
+        return
+    with conn(db_path) as c:
+        _run_batch(c, stmts)
+
+
+def receive_stock_bulk(items, db_path=None):
+    """Receive stock for many items in one DB round-trip. `items` is an iterable
+    of (sku, qty); each increments on-hand. Mirrors receive_stock()."""
+    sid = current_shop()
+    now = datetime.now().isoformat()
+    stmts = []
+    for sku, qty in items:
+        qty = float(qty or 0)
+        if not sku or qty <= 0:
+            continue
+        stmts.append((
+            """INSERT INTO inventory(shop_id,sku,on_hand,updated_at) VALUES(?,?,?,?)
+               ON CONFLICT(shop_id,sku) DO UPDATE SET
+                 on_hand=inventory.on_hand + ?, updated_at=excluded.updated_at""",
+            (sid, sku, qty, now, qty)))
+    if not stmts:
+        return
+    with conn(db_path) as c:
+        _run_batch(c, stmts)
+
+
 def upsert_inventory(rows: Iterable[dict], db_path=None):
     sid = current_shop()
     now = datetime.now().isoformat()
+    rows = list(rows)
+    if not rows:
+        return
     with conn(db_path) as c:
-        for r in rows:
-            c.execute(
-                """INSERT INTO inventory(shop_id,sku,on_hand,updated_at) VALUES(?,?,?,?)
-                   ON CONFLICT(shop_id,sku) DO UPDATE SET
-                     on_hand=excluded.on_hand, updated_at=excluded.updated_at""",
-                (sid, r["sku"], float(r.get("stock", r.get("on_hand", 0)) or 0),
-                 r.get("updated_at", now)))
+        c.executemany(
+            """INSERT INTO inventory(shop_id,sku,on_hand,updated_at) VALUES(?,?,?,?)
+               ON CONFLICT(shop_id,sku) DO UPDATE SET
+                 on_hand=excluded.on_hand, updated_at=excluded.updated_at""",
+            [(sid, r["sku"], float(r.get("stock", r.get("on_hand", 0)) or 0),
+              r.get("updated_at", now)) for r in rows])
 
 
 def upsert_suppliers(rows: Iterable[dict], db_path=None):
+    rows = list(rows)
+    if not rows:
+        return
     sid = current_shop()
     with conn(db_path) as c:
-        for r in rows:
-            c.execute(
-                """INSERT INTO suppliers(shop_id,sku,lead_time_days,reliability)
-                   VALUES(?,?,?,?)
-                   ON CONFLICT(shop_id,sku) DO UPDATE SET
-                     lead_time_days=excluded.lead_time_days,
-                     reliability=excluded.reliability""",
-                (sid, r["sku"], float(r.get("lead_time_days", 7) or 7),
-                 float(r.get("reliability", 0.95) or 0.95)))
+        c.executemany(
+            """INSERT INTO suppliers(shop_id,sku,lead_time_days,reliability)
+               VALUES(?,?,?,?)
+               ON CONFLICT(shop_id,sku) DO UPDATE SET
+                 lead_time_days=excluded.lead_time_days,
+                 reliability=excluded.reliability""",
+            [(sid, r["sku"], float(r.get("lead_time_days", 7) or 7),
+              float(r.get("reliability", 0.95) or 0.95)) for r in rows])
 
 
 # ---- named suppliers (master) + per-product assignment -------------------
