@@ -723,11 +723,10 @@ def page_sell(report):
         bc = st.columns([2, 2, 1])
         if bc[0].button("Save bill & update stock", type="primary",
                         use_container_width=True):
-            n = 0
-            for r in edited:
-                q = int(r["Qty"] or 0)
-                if r["sku"] and q > 0:
-                    db.record_sale(r["sku"], q, price=float(r["Price"] or 0)); n += 1
+            lines = [(r["sku"], int(r["Qty"] or 0), float(r["Price"] or 0))
+                     for r in edited if r["sku"] and int(r["Qty"] or 0) > 0]
+            db.record_sales_bulk(lines)   # whole bill = one DB round-trip
+            n = len(lines)
             st.session_state["bill_cart"] = {}
             st.success(f"Bill saved · {n} item(s) · ₹{total:,.2f}. Stock updated.")
             st.rerun()
@@ -787,12 +786,12 @@ def page_sell(report):
                 }, key="ocr_grid")
             bcols = st.columns([2, 2])
             if bcols[0].button(t("confirm_save", LANG), type="primary"):
-                n = 0
-                for row in edited:
-                    sku = row.get("Match to SKU") or ""
-                    qty = row.get("Qty sold") or 0
-                    if sku and qty > 0:
-                        db.record_sale(sku, qty); n += 1
+                lines = [(row.get("Match to SKU") or "", row.get("Qty sold") or 0)
+                         for row in edited
+                         if (row.get("Match to SKU") or "")
+                         and (row.get("Qty sold") or 0) > 0]
+                db.record_sales_bulk(lines)   # one round-trip for the batch
+                n = len(lines)
                 st.success(f"Saved {n} sale(s).")
                 st.rerun()
             bcols[1].download_button(
@@ -813,10 +812,9 @@ def page_sell(report):
                 t("sold_qty", LANG), min_value=0, step=1, value=0,
                 key=f"sell_{r['sku']}")
         if st.form_submit_button(t("save_sales", LANG), type="primary"):
-            n = 0
-            for sku, q in sold.items():
-                if q and q > 0:
-                    db.record_sale(sku, q); n += 1
+            lines = [(sku, q) for sku, q in sold.items() if q and q > 0]
+            db.record_sales_bulk(lines)   # one round-trip
+            n = len(lines)
             st.success(f"Saved {n} sale(s).") if n else st.info("Nothing entered.")
             st.rerun()
 
@@ -831,10 +829,9 @@ def page_sell(report):
                     t("received_qty", LANG), min_value=0, step=1, value=0,
                     key=f"recv_{r['sku']}")
             if st.form_submit_button(t("save_stock", LANG)):
-                n = 0
-                for sku, q in recv.items():
-                    if q and q > 0:
-                        db.receive_stock(sku, q); n += 1
+                lines = [(sku, q) for sku, q in recv.items() if q and q > 0]
+                db.receive_stock_bulk(lines)   # one round-trip
+                n = len(lines)
                 st.success(f"Added stock for {n} item(s).") if n \
                     else st.info("Nothing entered.")
                 st.rerun()
